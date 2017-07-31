@@ -151,6 +151,16 @@ public class MainActivity extends Activity {
         } catch (IOException e) {
             Log.e(TAG, "Error closing UART device:", e);
         }
+        EventBus.getDefault().unregister(this);
+        if ( RESETGpio != null) {
+            try {
+                RESETGpio.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                RESETGpio = null;
+            }
+        }
     }
 
     /**
@@ -238,13 +248,13 @@ public class MainActivity extends Activity {
 
         if (memberEmail == null) {
             memberEmail = "test@po-po.com";
-            deviceId = "RPI3_IO_test";
+            deviceId = "RPI3_SP_test";
             DatabaseReference mAddTestDevice=FirebaseDatabase.getInstance().getReference("/DEVICE/"+deviceId);
             Map<String, Object> addTest = new HashMap<>();
             addTest.put("companyId","po-po") ;
-            addTest.put("device","rpi3IOtest");
-            addTest.put("deviceType","GPIO智慧機"); //GPIO智慧機
-            addTest.put("description","Android things rpi3IO test");
+            addTest.put("device","rpi3SPtest");
+            addTest.put("deviceType","RS232智慧機"); //GPIO智慧機
+            addTest.put("description","Android things rpi3SP test");
             addTest.put("masterEmail",memberEmail) ;
             addTest.put("timeStamp", ServerValue.TIMESTAMP);
             addTest.put("topics_id",deviceId);
@@ -254,6 +264,9 @@ public class MainActivity extends Activity {
             mAddTestDevice.setValue(addTest);
             startServer();
         }
+        mRX = FirebaseDatabase.getInstance().getReference("/DEVICE/"+deviceId+"/RX/");
+        mTX = FirebaseDatabase.getInstance().getReference("/DEVICE/"+deviceId+"/TX/");
+        mRequest= FirebaseDatabase.getInstance().getReference("/DEVICE/"+deviceId+"/SETTINGS/CMD/");
         mSETTINGS = FirebaseDatabase.getInstance().getReference("/DEVICE/" + deviceId + "/SETTINGS");
         mAlert= FirebaseDatabase.getInstance().getReference("/DEVICE/"+ deviceId + "/alert");
         mLog=FirebaseDatabase.getInstance().getReference("/DEVICE/" + deviceId + "/LOG/");
@@ -269,9 +282,9 @@ public class MainActivity extends Activity {
             @Override
             public void onCancelled(DatabaseError databaseError) {}
         });
-        PeripheralManagerService service = new PeripheralManagerService();
+        PeripheralManagerService mRESETservice = new PeripheralManagerService();
         try {
-            RESETGpio = service.openGpio(RESET);
+            RESETGpio = mRESETservice.openGpio(RESET);
             RESETGpio.setDirection(Gpio.DIRECTION_IN);
             RESETGpio.setEdgeTriggerType(Gpio.EDGE_BOTH);
             RESETGpio.registerGpioCallback(new GpioCallback() {
