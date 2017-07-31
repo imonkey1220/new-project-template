@@ -38,6 +38,7 @@ import com.google.firebase.database.ServerValue;
 import com.google.firebase.database.ValueEventListener;
 
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -76,6 +77,12 @@ public class MainActivity extends Activity {
     int logCount,RXCount,TXCount;
     int dataCount;
     int limit=1000;//max Logs (even number)
+    int countPCMD=0;
+    int timer=1000 ;
+    boolean oneTimeCMDCheck=false;
+    ArrayList<String> PCMD = new ArrayList<>();
+    String oneTimeCMD;
+
     public MySocketServer mServer;
     private static final int SERVER_PORT = 9402;
     Map<String, Object> alert = new HashMap<>();
@@ -83,8 +90,8 @@ public class MainActivity extends Activity {
     Map<String, Object> register = new HashMap<>();
     Map<String, String> RXCheck = new HashMap<>();
     ArrayList<String> users = new ArrayList<>();
-    boolean restart=true;
 
+    boolean restart=true;
     Gpio RESETGpio;
     String RESET="BCM26";
 
@@ -139,12 +146,10 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         Log.d(TAG, "SP Destroyed");
-
         // Terminate the worker thread
         if (mInputThread != null) {
             mInputThread.quitSafely();
         }
-
         // Attempt to close the UART device
         try {
             closeUart();
@@ -166,7 +171,7 @@ public class MainActivity extends Activity {
     /**
      * Callback invoked when UART receives new incoming data.
      */
-    private UartDeviceCallback mCallback = new UartDeviceCallback() {
+    private UartDeviceCallback mSPCallback = new UartDeviceCallback() {
         @Override
         public boolean onUartDeviceDataAvailable(UartDevice uart) {
             // Queue up a data transfer
@@ -200,7 +205,7 @@ public class MainActivity extends Activity {
         mSPDevice.setParity(UartDevice.PARITY_NONE);
         mSPDevice.setStopBits(STOP_BITS);
 
-        mSPDevice.registerUartDeviceCallback(mCallback, mInputHandler);
+        mSPDevice.registerUartDeviceCallback(mSPCallback, mInputHandler);
     }
 
     /**
@@ -208,7 +213,7 @@ public class MainActivity extends Activity {
      */
     private void closeUart() throws IOException {
         if (mSPDevice != null) {
-            mSPDevice.unregisterUartDeviceCallback(mCallback);
+            mSPDevice.unregisterUartDeviceCallback(mSPCallback);
             try {
                 mSPDevice.close();
             } finally {
@@ -230,7 +235,9 @@ public class MainActivity extends Activity {
                 byte[] buffer = new byte[CHUNK_SIZE];
                 int read;
                 while ((read = mSPDevice.read(buffer, buffer.length)) > 0) {
-                    mSPDevice.write(buffer, read);//todo:
+                    mSPDevice.write(buffer, read);
+                    //todo:
+                    onReceivedData(buffer,ENQ,newLine);
 
                 }
             } catch (IOException e) {
@@ -238,6 +245,77 @@ public class MainActivity extends Activity {
             }
         }
     }
+    private void onReceivedData(byte[] data,String startStr,String endStr) {
+        try {
+            String dataUtf8 = new String(data, "UTF-8");
+            buffer += dataUtf8;
+            int index;
+            while ((index = buffer.indexOf(endStr)) != -1) {  //string.indexOf('\n')=-1 =>'\n' not exists
+                final String dataStr = buffer.substring(0, index + 1).trim();
+                buffer = buffer.length() == index ? "" : buffer.substring(index + 1);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        onSerialDataReceived(dataStr);
+                    }
+                });
+            }
+        } catch (UnsupportedEncodingException e) {
+            Log.e(TAG, "Error receiving USB data", e);
+        }
+    }
+
+    private void onSerialDataReceived(String data) {
+        deviceRespond(data);
+        Log.i(TAG, "Serial data received: " + data);
+    }
+
+    private void deviceRespond(String data){
+        Map<String, Object> RX = new HashMap<>();
+        if(oneTimeCMDCheck){
+            alert(data);
+            oneTimeCMDCheck=false;
+            RX.clear();
+            RX.put("message", oneTimeCMD + ":" + data);
+            RX.put("timeStamp", ServerValue.TIMESTAMP);
+            mRX.push().setValue(RX);
+            mLog.push().setValue(RX);
+            RXCount++;
+            logCount++;
+            SharedPreferences.Editor editor = getSharedPreferences(devicePrefs, Context.MODE_PRIVATE).edit();
+            editor.putInt("RXCount",RXCount);
+            editor.putInt("logCount",logCount);
+            editor.apply();
+        }else if (RXCheck.get(CMD)!=null) {
+            if (!data.equals(RXCheck.get(CMD))) {
+                alert(CMD + ":" + data);
+                RX.clear();
+                RX.put("message", CMD + ":" + data);
+                RX.put("timeStamp", ServerValue.TIMESTAMP);
+                mRX.push().setValue(RX);
+                mLog.push().setValue(RX);
+                RXCheck.put(CMD, data);
+                RXCount++;
+                logCount++;
+                SharedPreferences.Editor editor = getSharedPreferences(devicePrefs, Context.MODE_PRIVATE).edit();
+                editor.putInt("RXCount", RXCount);
+                editor.putInt("logCount", logCount);
+                editor.apply();
+            } else{
+                Log.i(TAG, "Serial data is no change." );
+            }
+        }
+        if (RXCount>(limit+(limit)/2)) {
+            dataLimit(mRX,limit);
+            RXCount= RXCount-(limit)/2;
+        }
+        if (RXCount>(limit+(limit)/2)) {
+            dataLimit(mLog,limit);
+            logCount= logCount-(limit)/2;
+        }
+
+    }
+
     private void init(){
         TimeZone.setDefault(TimeZone.getTimeZone("Asia/Taipei"));
         EventBus.getDefault().register(this);
