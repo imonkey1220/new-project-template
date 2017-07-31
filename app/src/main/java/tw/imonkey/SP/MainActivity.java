@@ -132,6 +132,9 @@ public class MainActivity extends Activity {
                     SharedPreferences.Editor editor = getSharedPreferences(devicePrefs, Context.MODE_PRIVATE).edit();
                     editor.putString("SP",SP);
                     editor.apply();
+                    Intent i;
+                    i = new Intent(MainActivity.this,MainActivity.class);
+                    startActivity(i);
                 }
             }
         }
