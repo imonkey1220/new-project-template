@@ -123,12 +123,16 @@ public class MainActivity extends Activity {
     private final BroadcastReceiver usbAttachedReceiver = new BroadcastReceiver() {
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
-
             if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
                 Log.i(TAG, "USB device attached");
                 UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
                 //todo
-                SP = device.getSerialNumber();
+                if(device.getSerialNumber()!=null) {
+                    SP = device.getSerialNumber();
+                    SharedPreferences.Editor editor = getSharedPreferences(devicePrefs, Context.MODE_PRIVATE).edit();
+                    editor.putString("SP",SP);
+                    editor.apply();
+                }
             }
         }
     };
@@ -137,25 +141,32 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        List<String> deviceList = mService.getUartDeviceList();
-        if (deviceList.isEmpty()) {
-            Log.i(TAG, "No UART port available on this device.");
-        } else {
-            Log.i(TAG, "List of available devices: " + deviceList);
-        }
+        SharedPreferences settings = getSharedPreferences(devicePrefs, Context.MODE_PRIVATE);
+        memberEmail = settings.getString("memberEmail", null);
+        deviceId = settings.getString("deviceId", null);
+        logCount = settings.getInt("logCount",0);
+        SP = settings.getString("SP", null);
+        if (SP==null) {
+            List<String> deviceList = mService.getUartDeviceList();
+            if (deviceList.isEmpty()) {
+                Log.i(TAG, "No UART port available on this device.");
+            } else {
+                Log.i(TAG, "List of available devices: " + deviceList);
+            }
+        }else {
+            // Create a background looper thread for I/O
+            mInputThread = new HandlerThread("InputThread");
+            mInputThread.start();
+            mInputHandler = new Handler(mInputThread.getLooper());
 
-        // Create a background looper thread for I/O
-        mInputThread = new HandlerThread("InputThread");
-        mInputThread.start();
-        mInputHandler = new Handler(mInputThread.getLooper());
-
-        // Attempt to access the UART device
-        try {
-            openUart(SP, BAUD_RATE);
-            // Read any initially buffered data
-            mInputHandler.post(mTransferUartRunnable);
-        } catch (IOException e) {
-            Log.e(TAG, "Unable to open UART device", e);
+            // Attempt to access the UART device
+            try {
+                openUart(SP, BAUD_RATE);
+                // Read any initially buffered data
+                mInputHandler.post(mTransferUartRunnable);
+            } catch (IOException e) {
+                Log.e(TAG, "Unable to open UART device", e);
+            }
         }
     }
 
