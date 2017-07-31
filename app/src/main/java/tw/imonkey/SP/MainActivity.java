@@ -135,6 +135,7 @@ public class MainActivity extends Activity {
                     Intent i;
                     i = new Intent(MainActivity.this,MainActivity.class);
                     startActivity(i);
+                    alert("SerialNumber="+SP+"設定完成!Restart");
                 }
             }
         }
