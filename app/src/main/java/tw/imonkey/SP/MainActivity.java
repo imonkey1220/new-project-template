@@ -17,17 +17,40 @@
 package tw.imonkey.SP;
 
 import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
 
+import com.google.android.things.pio.Gpio;
+import com.google.android.things.pio.GpioCallback;
 import com.google.android.things.pio.PeripheralManagerService;
 import com.google.android.things.pio.UartDevice;
 import com.google.android.things.pio.UartDeviceCallback;
+import com.google.firebase.database.DataSnapshot;
+import com.google.firebase.database.DatabaseError;
+import com.google.firebase.database.DatabaseReference;
+import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.database.ServerValue;
+import com.google.firebase.database.ValueEventListener;
 
 import java.io.IOException;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.TimeZone;
+
+import de.greenrobot.event.EventBus;
 
 /**
  * Example activity that provides a UART loopback on the
@@ -45,11 +68,39 @@ public class MainActivity extends Activity {
 
     private static final int CHUNK_SIZE = 512;
 
+    String buffer = "" , CMD = "";
+    //*******firebase*************
+    String memberEmail,deviceId;
+    public static final String devicePrefs = "devicePrefs";
+    DatabaseReference mSETTINGS,mRequest,mAlert, mLog, mTX, mRX,mUsers,presenceRef,connectedRef;
+    int logCount,RXCount,TXCount;
+    int dataCount;
+    int limit=1000;//max Logs (even number)
+    public MySocketServer mServer;
+    private static final int SERVER_PORT = 9402;
+    Map<String, Object> alert = new HashMap<>();
+    Map<String, Object> log = new HashMap<>();
+    Map<String, Object> register = new HashMap<>();
+    Map<String, String> RXCheck = new HashMap<>();
+    ArrayList<String> users = new ArrayList<>();
+    boolean restart=true;
+
+    Gpio RESETGpio;
+    String RESET="BCM26";
+
+    //*******PLC****************
+    //set serialport protocol parameters
+    String STX=new String(new char[]{0x02});
+    String ETX=new String(new char[]{0x03});
+    String ENQ=new String(new char[]{0x05});
+    String newLine=new String(new char[]{0x0D,0x0A});
+
+
     private PeripheralManagerService mService = new PeripheralManagerService();
     private HandlerThread mInputThread;
     private Handler mInputHandler;
 
-    private UartDevice mLoopbackDevice;
+    private UartDevice mSPDevice;
 
     private Runnable mTransferUartRunnable = new Runnable() {
         @Override
@@ -87,7 +138,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        Log.d(TAG, "Loopback Destroyed");
+        Log.d(TAG, "SP Destroyed");
 
         // Terminate the worker thread
         if (mInputThread != null) {
@@ -132,26 +183,26 @@ public class MainActivity extends Activity {
      * @throws IOException if an error occurs opening the UART port.
      */
     private void openUart(String name, int baudRate) throws IOException {
-        mLoopbackDevice = mService.openUartDevice(name);
+        mSPDevice = mService.openUartDevice(name);
         // Configure the UART
-        mLoopbackDevice.setBaudrate(baudRate);
-        mLoopbackDevice.setDataSize(DATA_BITS);
-        mLoopbackDevice.setParity(UartDevice.PARITY_NONE);
-        mLoopbackDevice.setStopBits(STOP_BITS);
+        mSPDevice.setBaudrate(baudRate);
+        mSPDevice.setDataSize(DATA_BITS);
+        mSPDevice.setParity(UartDevice.PARITY_NONE);
+        mSPDevice.setStopBits(STOP_BITS);
 
-        mLoopbackDevice.registerUartDeviceCallback(mCallback, mInputHandler);
+        mSPDevice.registerUartDeviceCallback(mCallback, mInputHandler);
     }
 
     /**
      * Close the UART device connection, if it exists
      */
     private void closeUart() throws IOException {
-        if (mLoopbackDevice != null) {
-            mLoopbackDevice.unregisterUartDeviceCallback(mCallback);
+        if (mSPDevice != null) {
+            mSPDevice.unregisterUartDeviceCallback(mCallback);
             try {
-                mLoopbackDevice.close();
+                mSPDevice.close();
             } finally {
-                mLoopbackDevice = null;
+                mSPDevice = null;
             }
         }
     }
@@ -163,17 +214,218 @@ public class MainActivity extends Activity {
      * Potentially long-running operation. Call from a worker thread.
      */
     private void transferUartData() {
-        if (mLoopbackDevice != null) {
+        if (mSPDevice != null) {
             // Loop until there is no more data in the RX buffer.
             try {
                 byte[] buffer = new byte[CHUNK_SIZE];
                 int read;
-                while ((read = mLoopbackDevice.read(buffer, buffer.length)) > 0) {
-                    mLoopbackDevice.write(buffer, read);
+                while ((read = mSPDevice.read(buffer, buffer.length)) > 0) {
+                    mSPDevice.write(buffer, read);//todo:
+
                 }
             } catch (IOException e) {
                 Log.w(TAG, "Unable to transfer data over UART", e);
             }
+        }
+    }
+    private void init(){
+        TimeZone.setDefault(TimeZone.getTimeZone("Asia/Taipei"));
+        EventBus.getDefault().register(this);
+        SharedPreferences settings = getSharedPreferences(devicePrefs, Context.MODE_PRIVATE);
+        memberEmail = settings.getString("memberEmail", null);
+        deviceId = settings.getString("deviceId", null);
+        logCount = settings.getInt("logCount",0);
+
+        if (memberEmail == null) {
+            memberEmail = "test@po-po.com";
+            deviceId = "RPI3_IO_test";
+            DatabaseReference mAddTestDevice=FirebaseDatabase.getInstance().getReference("/DEVICE/"+deviceId);
+            Map<String, Object> addTest = new HashMap<>();
+            addTest.put("companyId","po-po") ;
+            addTest.put("device","rpi3IOtest");
+            addTest.put("deviceType","GPIO智慧機"); //GPIO智慧機
+            addTest.put("description","Android things rpi3IO test");
+            addTest.put("masterEmail",memberEmail) ;
+            addTest.put("timeStamp", ServerValue.TIMESTAMP);
+            addTest.put("topics_id",deviceId);
+            Map<String, Object> user = new HashMap<>();
+            user.put(memberEmail.replace(".","_"),memberEmail);
+            addTest.put("users",user);
+            mAddTestDevice.setValue(addTest);
+            startServer();
+        }
+        mSETTINGS = FirebaseDatabase.getInstance().getReference("/DEVICE/" + deviceId + "/SETTINGS");
+        mAlert= FirebaseDatabase.getInstance().getReference("/DEVICE/"+ deviceId + "/alert");
+        mLog=FirebaseDatabase.getInstance().getReference("/DEVICE/" + deviceId + "/LOG/");
+        mUsers= FirebaseDatabase.getInstance().getReference("/DEVICE/"+deviceId+"/users/");
+        mUsers.addValueEventListener(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                users.clear();
+                for (DataSnapshot childSnapshot : snapshot.getChildren()) {
+                    users.add(childSnapshot.getValue().toString());
+                }
+            }
+            @Override
+            public void onCancelled(DatabaseError databaseError) {}
+        });
+        PeripheralManagerService service = new PeripheralManagerService();
+        try {
+            RESETGpio = service.openGpio(RESET);
+            RESETGpio.setDirection(Gpio.DIRECTION_IN);
+            RESETGpio.setEdgeTriggerType(Gpio.EDGE_BOTH);
+            RESETGpio.registerGpioCallback(new GpioCallback() {
+                @Override
+                public boolean onGpioEdge(Gpio gpio) {
+                    try {
+                        if (RESETGpio.getValue()){
+                            startServer();
+                        }
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                    return true;
+                }
+            });
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+    private void alert(final String message){
+        mSETTINGS.child("notify").addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                if(snapshot.child("SMS").getValue()!=null) {
+                    for (String email : users) {
+                        NotifyUser.SMSPUSH(deviceId, email, message);
+                    }
+                }
+                if (snapshot.child("EMAIL").getValue() != null) {
+                    for (String email : users) {
+                        NotifyUser.emailPUSH(deviceId, email, message);
+                    }
+                }
+                if (snapshot.child("PUSH").getValue() != null) {
+                    for (String email : users) {
+                        NotifyUser.IIDPUSH(deviceId, email, "智慧機通知", message);
+                    }
+                    NotifyUser.topicsPUSH(deviceId, memberEmail, "智慧機通知", message);
+                }
+            }
+            @Override
+            public void onCancelled(DatabaseError databaseError) {}
+        });
+
+        alert.clear();
+        alert.put("message","Device:"+message);
+        alert.put("timeStamp", ServerValue.TIMESTAMP);
+        mAlert.setValue(alert);
+    }
+    private void log(String message) {
+        log.clear();
+        log.put("message", "Device:"+message);
+        log.put("memberEmail", memberEmail);
+        log.put("timeStamp", ServerValue.TIMESTAMP);
+        mLog.push().setValue(log);
+        logCount++;
+        if (logCount>(limit+(limit)/2)){
+            dataLimit(mLog,limit);
+            logCount=limit;
+        }
+        SharedPreferences.Editor editor = getSharedPreferences(devicePrefs, Context.MODE_PRIVATE).edit();
+        editor.putInt("logCount",logCount);
+        editor.apply();
+    }
+    private void dataLimit(final DatabaseReference mData,int limit) {
+        mData.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                dataCount=(int)(snapshot.getChildrenCount());
+            }
+            @Override
+            public void onCancelled(DatabaseError databaseError) {
+            }
+        });
+        if((dataCount-limit)>0) {
+            mData.orderByKey().limitToFirst(dataCount - limit)
+                    .addListenerForSingleValueEvent(new ValueEventListener() {
+                        @Override
+                        public void onDataChange(DataSnapshot snapshot) {
+                            for (DataSnapshot childSnapshot : snapshot.getChildren()) {
+                                mData.child(childSnapshot.getKey()).removeValue();
+                            }
+                        }
+
+                        @Override
+                        public void onCancelled(DatabaseError databaseError) {
+                        }
+                    });
+        }
+    }
+    //device online check
+    private void deviceOnline(){
+        presenceRef= FirebaseDatabase.getInstance().getReference("/DEVICE/"+deviceId+"/connection");//for log activity
+        presenceRef.setValue(true);
+        presenceRef.onDisconnect().setValue(null);
+        connectedRef = FirebaseDatabase.getInstance().getReference(".info/connected");
+        connectedRef.addValueEventListener(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot snapshot) {
+                Boolean connected = snapshot.getValue(Boolean.class);
+                if (connected) {
+                    presenceRef.setValue(true);
+                }
+            }
+            @Override
+            public void onCancelled(DatabaseError error) {
+            }
+        });
+    }
+
+    // websocket server
+    private void startServer() {
+        InetAddress inetAddress = getInetAddress();
+        if (inetAddress == null) {
+            return;
+        }
+
+        mServer = new MySocketServer(new InetSocketAddress(inetAddress.getHostAddress(), SERVER_PORT));
+        mServer.start();
+    }
+
+    private static InetAddress getInetAddress() {
+        try {
+            for (Enumeration en = NetworkInterface.getNetworkInterfaces(); en.hasMoreElements();) {
+                NetworkInterface networkInterface = (NetworkInterface) en.nextElement();
+
+                for (Enumeration enumIpAddr = networkInterface.getInetAddresses(); enumIpAddr.hasMoreElements();) {
+                    InetAddress inetAddress = (InetAddress) enumIpAddr.nextElement();
+
+                    if (!inetAddress.isLoopbackAddress() && inetAddress instanceof Inet4Address) {
+                        return inetAddress;
+                    }
+                }
+            }
+        } catch (SocketException e) {
+            e.printStackTrace();
+        }
+
+        return null;
+    }
+    @SuppressWarnings("UnusedDeclaration")
+    public void onEvent(SocketMessageEvent event) {
+        String message = event.getMessage();
+        String[] mArray = message.split(",");
+        if (mArray.length==2) {
+            SharedPreferences.Editor editor = getSharedPreferences(devicePrefs, Context.MODE_PRIVATE).edit();
+            editor.putString("memberEmail", mArray[0]);
+            editor.putString("deviceId", mArray[1]);
+            editor.apply();
+            mServer.sendMessage("echo: " + message);
+            Intent i;
+            i = new Intent(this,MainActivity.class);
+            startActivity(i);
+            alert("IO智慧機設定完成!");
         }
     }
 }
