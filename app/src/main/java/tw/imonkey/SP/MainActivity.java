@@ -17,9 +17,13 @@
 package tw.imonkey.SP;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -116,6 +120,19 @@ public class MainActivity extends Activity {
         }
     };
 
+    private final BroadcastReceiver usbAttachedReceiver = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+
+            if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
+                Log.i(TAG, "USB device attached");
+                UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                //todo
+                SP = device.getSerialNumber();
+            }
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -166,6 +183,7 @@ public class MainActivity extends Activity {
                 RESETGpio = null;
             }
         }
+        unregisterReceiver(usbAttachedReceiver);
     }
 
     /**
@@ -381,6 +399,9 @@ public class MainActivity extends Activity {
         } catch (IOException e) {
             e.printStackTrace();
         }
+        // Attach events are sent as a system-wide broadcast
+        IntentFilter filter = new IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+        registerReceiver(usbAttachedReceiver, filter);
     }
     private void alert(final String message){
         mSETTINGS.child("notify").addListenerForSingleValueEvent(new ValueEventListener() {
